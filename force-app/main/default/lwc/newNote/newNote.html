@@ -1,0 +1,78 @@
+<template>
+<lightning-card variant="Narrow">
+    <h1 class="head">New Note</h1>
+    <hr class="hr-style">
+    <div class="slds-p-around_small">
+        <lightning-accordion
+        allow-multiple-sections-open
+        active-section-name={activeSections}
+        onsectiontoggle={handleSectionToggle}
+         >
+         <lightning-record-edit-form object-api-name={objectAPIName} onsuccess={handleSave}>
+         <lightning-accordion-section name="Information" label="Information">
+            <div class="demo-only demo-only--sizing slds-grid slds-wrap">
+                <div class="slds-size_1-of-2">
+                    <div class="slds-m-around_x-small">
+                        <lightning-input-field field-name={subj}></lightning-input-field>
+                    </div>
+                </div>
+                <div class="slds-size_1-of-2">
+                    <div class="slds-m-around_x-small">
+                        <lightning-input-field field-name={category}></lightning-input-field>
+                    </div>
+                </div>
+                <div class="slds-size_1-of-2">
+                    <div class="slds-m-around_x-small">
+                        <lightning-input-field field-name={opp}></lightning-input-field>
+                    </div>
+                </div>
+                <div class="slds-size_1-of-2">
+                    <div class="slds-m-around_x-small">
+                        <lightning-input-field field-name={noteSubj}></lightning-input-field>
+                    </div>
+                </div>
+                <div class="slds-size_1-of-2">
+                    <div class="slds-m-around_x-small">
+                        <lightning-input-field field-name={contact}></lightning-input-field>
+                    </div>
+                </div>
+                <div class="slds-size_1-of-2">
+                    <div class="slds-m-around_x-small">
+                        <lightning-input-field field-name={noteSubType}></lightning-input-field>
+                    </div>
+                </div>
+                <div class="slds-size_1-of-2">
+                    <div class="slds-m-around_x-small">
+                        <lightning-input-field field-name={account}></lightning-input-field>
+                    </div>
+                </div>
+                <div class="slds-size_1-of-2">
+                    <div class="slds-m-around_x-small">
+                        <lightning-input-field field-name={date}></lightning-input-field>
+                    </div>
+                </div>
+                <div class="slds-size_1-of-2">
+                    <div class="slds-m-around_x-small">
+                        <lightning-input-field field-name={tradingModel}></lightning-input-field>
+                    </div>
+                </div>
+                <div class="slds-size_1-of-2">
+                    <div class="slds-m-around_x-small">
+                        <lightning-input-field field-name={highImp}></lightning-input-field>
+                    </div>
+                </div>
+                </div>
+         </lightning-accordion-section>
+         <lightning-accordion-section name="Description" label="Description">
+            <div class="slds-m-around_x-small">
+                <lightning-input-field field-name={description}></lightning-input-field>
+            </div>
+        </lightning-accordion-section>    
+         <div class="slds-clearfix save-button">
+            <lightning-button type="submit" variant="brand" label="Save" class="slds-float_right"></lightning-button> 
+        </div>
+        </lightning-record-edit-form>
+        </lightning-accordion>
+    </div>
+ </lightning-card>  
+</template>
