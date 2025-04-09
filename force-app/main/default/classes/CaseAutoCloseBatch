@@ -1,0 +1,176 @@
+/**
+* @File Name : CaseAutoCloseBatch.cls
+* @Description : Batch Class replaing the case auto-close flow 
+* @Author : Russ Maksutov
+* @Last Modified On : February 24, 2025
+* @Modification Log :
+*==============================================================================
+* Ver | Date | Author | Modification
+*==============================================================================
+* 1.0 | February 19, 2025 |   | Initial Version
+**/
+
+public class CaseAutoCloseBatch implements Database.Batchable<SObject>, Database.Stateful, Schedulable{
+
+    private static String Resolution_Time_Milestone = System.Label.Resolution_Time_Milestone;
+    private static Map<Id, Case> caseMap = new Map<Id, Case>();
+    private static Set<String> eligibleCaseStatus = new Set<String>{'Solved', 'Pending'};
+    private static Set<String> templateNames = new Set<String>{'No Response After 14 Days in Pending Status (Review)', 'No Response After 14 Days in Pending Status (June)', 'No Response After 14 Days in Pending Status (LATAM)', 'No Response After 14 Days in Pending Status (Main)', 'No Response After 14 Days in Pending Status (Incident)'};
+
+    public Database.QueryLocator start(Database.BatchableContext bc) {  
+        String query =  ' SELECT Id, Status, Case_Locked__c, ContactId, Case_Status_Number__c, Closed_Reason__c, Is_Bypass_Status_Validation__c, ValidationBypassDateTime__c, Manual_Reason__c, Are_We_Expecting_Reply__c, ' + 
+                        ' Origin, CaseNumber, Type, Incident__c, Contact.Email, Subject, Contact_Name__c, LastModifiedDate,' + 
+                        ' ( SELECT Id, MilestoneTypeId, IsCompleted, CompletionDate, ActualElapsedTimeInHrs FROM CaseMilestones WHERE MilestoneTypeId = :Resolution_Time_Milestone ) ' + 
+             			' FROM Case ';
+  		if (!Test.isRunningTest()) {
+        	//query += ' WHERE LastModifiedDate <= LAST_N_DAYS:14 AND Status IN : eligibleCaseStatus';
+            query += ' WHERE Id = \'500RT00000FmW09YAF\' AND Status IN : eligibleCaseStatus';
+        }
+        return Database.getQueryLocator(query);
+    }
+
+    public void execute(Database.BatchableContext bc, List<Case> caseRecords) {
+        try {   
+            List<CaseMilestone> caseMilestoneUpdate = new List<CaseMilestone>();
+            Set<Id> pendingCaseIds = new Set<Id>();
+            List<Messaging.SingleEmailMessage> emailMessages = new List<Messaging.SingleEmailMessage>();
+            Map<String, Id> emailTemplateMap = new Map<String, Id>();
+			Map<Id,Case> pendingCasesMap = new Map<Id,Case>();
+                
+            for(Case cs : caseRecords){
+                if(cs.Status == 'Solved'){
+                    caseMap.put(cs.Id, setCaseRecordValues(cs));
+                }else if(cs.Status == 'Pending'){
+                    pendingCaseIds.add(cs.Id);
+                    pendingCasesMap.put(cs.Id, cs);
+                    for(CaseMilestone cm : cs.CaseMilestones){
+                        if (cm.MilestoneTypeId == Resolution_Time_Milestone && !cm.IsCompleted) {
+                            cm.CompletionDate = cs.LastModifiedDate;
+                            caseMilestoneUpdate.add(cm);
+                        }
+                    }
+                }
+            }
+
+            if(!caseMilestoneUpdate.isEmpty()){
+                update caseMilestoneUpdate;
+            }
+
+            Map<Id, CaseMilestone> completedMilestoneMap = new Map<Id, CaseMilestone>();
+            for(CaseMilestone cm : [
+                SELECT Id, CaseId, CompletionDate, ActualElapsedTimeInHrs 
+                FROM CaseMilestone 
+                WHERE IsCompleted = true AND MilestoneTypeId = :Resolution_Time_Milestone AND CaseId IN :pendingCasesMap.keySet()
+            ]){
+                completedMilestoneMap.put(cm.CaseId, cm);
+            }
+
+            for (EmailTemplate et : [SELECT Id, Name FROM EmailTemplate WHERE Name IN :templateNames]) {
+                emailTemplateMap.put(et.Name, et.Id);
+            }
+
+            for (Case cs : pendingCasesMap.values()) {
+                if(completedMilestoneMap.containsKey(cs.Id)){
+                    CaseMilestone updatedMilestone = completedMilestoneMap.get(cs.Id);
+                    cs.IsStopped = false;
+                    cs.Resolution_Time__c = updatedMilestone.CompletionDate;
+                    cs.Total_Resolution_Time__c = updatedMilestone.ActualElapsedTimeInHrs;
+                    caseMap.put(cs.Id,cs);
+                }
+
+                if((cs.Origin == 'Email - Reviews' || cs.Manual_Reason__c == 'Reviews') && (cs.Are_We_Expecting_Reply__c == null || cs.Are_We_Expecting_Reply__c != 'Yes' || cs.Are_We_Expecting_Reply__c == 'No') ){
+                    updateCaseMap(caseMap,cs);
+                    if(checkEmailCreationCriteria(cs)){
+                        emailMessages.add(createEmailMessage(cs.Id, cs.ContactId, emailTemplateMap.get('No Response After 14 Days in Pending Status (Review)')));
+                    }
+                }else if(cs.Type != 'SPAM/Wrong Number' && cs.Incident__c != true && (cs.Origin == 'Email - JuneSupport' || cs.Origin == 'Email - MJuneSupport')){
+                    updateCaseMap(caseMap,cs);
+                    if(checkEmailCreationCriteria(cs)){
+                        emailMessages.add(createEmailMessage(cs.Id, cs.ContactId, emailTemplateMap.get('No Response After 14 Days in Pending Status (June)')));
+                    }
+                }else if(cs.Type != 'SPAM/Wrong Number' && cs.Incident__c != true && (cs.Origin == 'Email - Clientes' || cs.Origin == 'Email - ClientesColombia' || cs.Origin == 'Email - LatinAmerica' || cs.Origin == 'Email - SoporteMX')){
+                    updateCaseMap(caseMap,cs);
+                    if(checkEmailCreationCriteria(cs)){
+                        emailMessages.add(createEmailMessage(cs.Id, cs.ContactId, emailTemplateMap.get('No Response After 14 Days in Pending Status (LATAM)')));
+                    }
+                }else if(cs.Origin != 'Email - JuneSupport' && cs.Origin != 'Email - MJuneSupport' && cs.Origin != 'Email - Clientes' && cs.Origin != 'Email - ClientesColombia' && cs.Origin != 'Email - LatinAmerica' && cs.Origin != 'Email - SoporteMX' && cs.Type != 'SPAM/Wrong Number' && cs.Incident__c != true ){
+                    updateCaseMap(caseMap,cs);
+                    if(checkEmailCreationCriteria(cs)){
+                        emailMessages.add(createEmailMessage(cs.Id, cs.ContactId, emailTemplateMap.get('No Response After 14 Days in Pending Status (Main)')));
+                    }
+                }else if(cs.Type != 'SPAM/Wrong Number' && cs.Incident__c){
+                    updateCaseMap(caseMap,cs);
+                    if(checkEmailCreationCriteria(cs)){
+                        emailMessages.add(createEmailMessage(cs.Id, cs.ContactId, emailTemplateMap.get('No Response After 14 Days in Pending Status (Incident)')));
+                    }
+                }
+            }
+
+            if(!caseMap.isEmpty()){
+                Database.update(caseMap.values(), false);
+            }
+            
+            if (!emailMessages.isEmpty()) {
+                try{
+                    Messaging.sendEmail(emailMessages);
+                }catch(Exception ex){
+					System.debug('Error Sending Email: ' + ex.getMessage() + ' Stack trace: ' + ex.getStackTraceString());
+                }
+            }
+        }catch(Exception ex){
+            System.debug('Error Updating Record: ' + ex.getMessage() + ' Stack trace: ' + ex.getStackTraceString());
+        }
+    }
+    
+    private static Boolean checkEmailCreationCriteria(Case caseRecord) {
+        Date thresholdDate = Date.today().addDays(-21);
+        
+        return caseRecord.ContactId != null 
+            && caseRecord.Contact.Email != null
+            && caseRecord.LastModifiedDate.date() >= thresholdDate;
+	}
+
+    private static Messaging.SingleEmailMessage createEmailMessage(Id caseId, Id contactId, Id emailTemplateId) {
+        Messaging.SingleEmailMessage mail = new Messaging.SingleEmailMessage();
+        mail.setTemplateId(emailTemplateId);
+        mail.setTargetObjectId(contactId);
+        mail.setWhatId(caseId);
+        mail.setSaveAsActivity(false);
+        return mail;
+    }
+
+    private static void updateCaseMap(Map<Id, Case> caseMap, Case cs) {
+        if(caseMap != null && !caseMap.isEmpty() && caseMap.containsKey(cs.Id)){
+            caseMap.put(cs.Id, setCaseRecordValues(caseMap.get(cs.Id)));
+        }else{
+            caseMap.put(cs.Id, setCaseRecordValues(cs));        
+        }
+    }
+
+    private static Case setCaseRecordValues(Case cs){
+        cs.Case_Locked__c = true;
+        cs.Case_Status_Number__c = getCaseStatusNumber(cs);
+        cs.Closed_Reason__c = cs.Status == 'Solved' ? 'Auto Closed' : 'No Response';
+        cs.Is_Bypass_Status_Validation__c = true;
+        cs.Status = 'Closed';
+        cs.ValidationBypassDateTime__c = System.Now();
+        return cs;
+    }
+
+    private static String getCaseStatusNumber(Case cs) {
+        if (cs.Status == 'New') return '1';
+        if (cs.Status == 'Open') return '2';
+        if (cs.Status == 'On Hold') return '3';
+        if (cs.Status == 'Pending' || cs.Status == 'Solved') return '4';
+        if (cs.Status == 'Closed') return '5';
+        return '4';
+    }
+
+    public void finish(Database.BatchableContext context) {
+        System.debug('Batch process completed.');
+    }
+
+    public void execute(SchedulableContext sc) {	
+        Database.executeBatch(new CaseAutoCloseBatch(), 20);
+    }
+}
