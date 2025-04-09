@@ -1,0 +1,63 @@
+/**
+* @File Name : InscipherTaxFilingServiceWrapper.cls
+* @Description :
+* @Author :
+* @Last Modified By :
+* @Last Modified On : January 10, 2025
+* @Modification Log :
+*==============================================================================
+* Ver | Date | Author | Modification
+*==============================================================================
+* 1.0 | January 10, 2025 |   | Initial Version
+**/
+
+public class InscipherTaxFilingServiceWrapper {
+	
+    public String id;
+    public String policy_number;
+    public String policy_effective_date;
+    public String policy_expiration_date;
+    public String transaction_effective_date;
+    public String expiring_policy_number;
+    public String invoice_date;
+    public String invoice_number;
+    public String transaction_type;
+    public String policy_type;
+    public String transaction_line_of_business;
+    public String transaction_line_of_business_list;
+    public String transaction_line_of_business_coverage;
+    public String mailing_address;
+    public String mailing_city;
+    public String mailing_zip_code;
+    public String mailing_state_code;
+    public Integer physical_same_as_mailing;
+    public String physical_state_code;
+    public String physical_zip_code;
+    public String physical_address2;
+    public String physical_city;
+    public String physical_address;
+    public String business_group_id;
+    public String retail_producer_name;
+    public String retail_producer_license;
+    public String retail_agency_name;
+    public String retail_agency_license;
+    public String retail_address;
+    public String retail_address2;
+    public String retail_city;
+    public String retail_state;
+    public String retail_zip;
+    public String retail_phone_number;
+    public String retail_email_address;
+    public String insured_entity;
+    public String account_written_as;
+    public Integer rpg;
+    public Decimal agency_fee;
+    public Decimal inspection_fee;
+    public string mailing_insured_name;
+    public Decimal premium;
+    public String purchasing_group_name;
+
+    public class TransactionDocument {
+        public String code;
+    }
+}
