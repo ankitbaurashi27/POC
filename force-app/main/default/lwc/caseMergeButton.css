@@ -1,0 +1,35 @@
+.custom-container{
+	color : black;
+}
+
+.centered-card .slds-card__header {
+    text-align: center;
+    margin-right: 400px;
+}
+
+
+.field-value-cell {
+    max-width: 200px; 
+    word-wrap: break-word; 
+    white-space: normal; 
+    overflow: hidden; 
+    text-overflow: ellipsis; 
+    vertical-align: middle; 
+    padding-left: 10px;
+}
+
+.field-label-cell {
+    width: 150px; 
+    text-align: left;
+    padding-left: 10px;
+}
+
+.custom-label {
+    margin-left: 8px; 
+    font-weight: bold; 
+    margin-top: 8px;
+}
+
+.custom-label-select-all{
+    font-weight: bold; 
+}
