@@ -1,0 +1,181 @@
+/**
+* @File Name : MissingSAPNumberNotificationJob.cls
+* @Description : Batch Class that check if an order is missing an SAP # number 24 hours after creation
+* @Author : Russ Maksutov
+* @Last Modified On : April 17, 2025
+* @Modification Log :
+*==============================================================================
+* Ver | Date 		   | Author 			| Modification
+*==============================================================================
+* 1.0 | April 17, 2025 | 	Russ Maksutov   | WEB-10990 : Initial Version
+* 2.0 | May 28, 2025   |	Russ Maksutov   | WEB-12757 : Added logic to send email for RO.
+**/
+
+public class MissingSAPNumberNotificationJob implements Database.Batchable<SObject>, Schedulable, Database.Stateful {
+
+    public String objectAPIName = '';
+
+    public Static FINAL Date endDate = Date.today().addDays(-1);
+	public Static FINAL Date startDate = Date.today().addDays(-6);
+    
+	public MissingSAPNumberNotificationJob(){}
+
+    public MissingSAPNumberNotificationJob(String objectAPIName){
+        this.objectAPIName = objectAPIName;
+    }
+    
+	public Database.QueryLocator start(Database.BatchableContext BC) {        
+        if(objectAPIName == 'ReturnOrderHistory'){
+            return Database.getQueryLocator(getROHistoryQuery());
+        }else{ 
+            return Database.getQueryLocator(getOrderQuery(startDate, endDate));
+        }
+    }
+    
+    public void execute(Database.BatchableContext BC, List<sObject> scope) {
+        List<sObject> sObjectList = (List<sObject>) scope;
+        List<sObject> roRecordListFiltered = new List<sObject>();
+
+        if(objectAPIName == 'ReturnOrderHistory'){
+            for(ReturnOrderHistory roHistory : (List<ReturnOrderHistory>)sObjectList){
+                if(roHistory.NewValue == 'Submitted' && roHistory.CreatedDate.Date() >= startDate && roHistory.CreatedDate.Date() <= endDate){
+                    roRecordListFiltered.add((sObject)roHistory);
+                }
+            }
+            if(!roRecordListFiltered.isEmpty()){
+				prepareNotificationEmailBodyAndSendEmail(roRecordListFiltered, objectAPIName);
+            }
+        }else{
+            prepareNotificationEmailBodyAndSendEmail(sObjectList, objectAPIName);
+        }
+    }
+    
+    public void finish(Database.BatchableContext BC) {
+        System.debug('MissingSAPNumberNotificationJob finished successfully.');
+    }
+
+    public void execute(SchedulableContext sc) {
+        Database.executeBatch(new MissingSAPNumberNotificationJob('ReturnOrderHistory'), 100);
+        
+        if(!Test.isRunningTest()){
+			Database.executeBatch(new MissingSAPNumberNotificationJob('Order'), 50);
+        }
+    }
+    
+    private static void prepareNotificationEmailBodyAndSendEmail(List<sObject> sObjectList, String objectAPIName) {
+        OrgWideEmailAddress supportEmailAddress = getSupportEmailAddress();
+        
+        String baseUrl = System.URL.getOrgDomainUrl().toExternalForm();
+        
+        String emailBody = buildEmailBody(sObjectList, objectAPIName, baseUrl);
+        
+        List<String> recipientsEmailAddress = getRecipients();
+
+        if (!recipientsEmailAddress.isEmpty()) {
+            Messaging.SingleEmailMessage email = new Messaging.SingleEmailMessage();
+            String subjectPrefix = String.IsBlank(objectAPIName) || objectAPIName == 'Order' ? 'Missing SAP Numbers on Orders - ' : 'Missing SAP Numbers on Return Orders - ';
+            email.setSubject(subjectPrefix + Date.today().format());
+            email.setHtmlBody(emailBody);
+
+            if (supportEmailAddress != null) {
+                email.setOrgWideEmailAddressId(supportEmailAddress.Id);
+            }
+
+            email.setToAddresses(recipientsEmailAddress);
+            
+            Messaging.sendEmail(new Messaging.SingleEmailMessage[] { email }, false);
+        }
+    }
+
+    private static OrgWideEmailAddress getSupportEmailAddress() {
+        return [SELECT Id FROM OrgWideEmailAddress WHERE Address = 'no-reply@weber.com' LIMIT 1];
+    }
+
+    public static String buildEmailBody(List<sObject> sObjectList, String objectAPIName, String baseUrl) {
+        String emailBody = 'Dear Weber IT and Order Management Team,<br/><br/>';
+
+        emailBody += objectAPIName == 'Order' ? 
+                                                'The following order(s) are missing SAP numbers in NAM Salesforce OMS. ' +
+                                                'The order(s) below have been submitted to SAP within the last 5 days. Please review to see if the orders made it to SAP, ' +
+                                                'if the orders were cancelled mid-integration, or if the order status file from SAP failed to get processed correctly.<br/><br/>' + 
+                                                '<table border="1" cellpadding="5" cellspacing="0" style="border-collapse: collapse;">' 
+
+                                                : 'The following return order(s) are missing SAP numbers in NAM Salesforce OMS. ' +
+                                                  'The return order(s) below have been submitted to SAP within the last 5 days. Please review to see if the return orders made it to SAP or if the return order status file from SAP failed to get processed correctly.<br/><br/>' + 
+                                                  '<table border="1" cellpadding="5" cellspacing="0" style="border-collapse: collapse;">';
+
+        if (objectAPIName == 'ReturnOrderHistory') {
+            emailBody += '<tr><th>Return Order Number</th><th>Submitted Date</th><th>Return Order Created By</th></tr>';
+
+            for (ReturnOrderHistory returnOrdHistory : (List<ReturnOrderHistory>) sObjectList) {
+
+                String submittedDate = String.valueOf(returnOrdHistory.CreatedDate.format());
+                String recordUrl = baseUrl + '/' + returnOrdHistory.ReturnOrderId;
+                String createdBy = returnOrdHistory.ReturnOrder.CreatedBy.Name;
+
+                emailBody += '<tr>' +
+                    '<td><a href="' + recordUrl + '">' + returnOrdHistory.ReturnOrder.ReturnOrderNumber + '</a></td>' +
+                    '<td>' + submittedDate + '</td>' +
+                    '<td>' + createdBy + '</td>' +
+                    '</tr>';
+            }
+        } else {
+            emailBody += '<tr><th>Order Number</th><th>Submitted Date</th><th>Order Created By</th></tr>';
+
+            for (Order ord : (List<Order>) sObjectList) {
+
+                String submittedDate = ord.OrderSubmittedDate__c != null ? String.valueOf(ord.OrderSubmittedDate__c.format()) : 'N/A';
+                String recordUrl = baseUrl + '/' + ord.Id;
+                String createdBy = ord.CreatedBy.Name;
+
+                emailBody += '<tr>' +
+                    '<td><a href="' + recordUrl + '">' + ord.OrderNumber + '</a></td>' +
+                    '<td>' + submittedDate + '</td>' +
+                    '<td>' + createdBy + '</td>' +
+                    '</tr>';
+            }
+        }
+
+        emailBody += '</table><br/>Thanks,<br/>Weber Automation';
+        return emailBody;
+    }
+
+    
+    private static List<String> getRecipients(){
+
+        List<String> recipientsEmailAddress = new List<String>();
+        for(GroupMember grpMember : [SELECT Id, UserOrGroup.Email FROM GroupMember WHERE Group.DeveloperName ='SAP_Watchers']){
+            if(grpMember.UserOrGroup.Email != null){
+                recipientsEmailAddress.add(grpMember.UserOrGroup.Email);
+            }
+        }
+        
+        if(!System.Label.SAPWatchersExternalEmailList.equalsIgnoreCase('false')){
+            List<String> externalEmails = System.Label.SAPWatchersExternalEmailList.split(';');
+            if(!externalEmails.isEmpty()){
+                recipientsEmailAddress.addAll(externalEmails);
+            }
+        }   
+
+        return recipientsEmailAddress;     
+    }
+
+    private static String getROHistoryQuery(){
+
+        return 'SELECT Id, ReturnOrderId, ReturnOrder.SAPOrder__c, ReturnOrder.CreatedBy.Name, NewValue, CreatedDate, ReturnOrder.ReturnOrderNumber ' +
+               'FROM ReturnOrderHistory ' +
+               'WHERE Field = \'Status\' ' +
+			   'AND ReturnOrder.Status != \'Cancelled\' ' +
+               'AND ReturnOrder.SAPOrder__c = NULL';
+    }
+
+    private static String getOrderQuery(Date startDate, Date endDate){
+        
+        return 'SELECT Id, OrderNumber, OrderSubmittedDate__c, CreatedBy.Name ' +
+               'FROM Order ' +
+               'WHERE OrderSubmittedDate__c >= :startDate ' +
+               'AND OrderSubmittedDate__c <= :endDate ' +
+               'AND Status != \'Cancelled\' ' +
+               'AND SAPOrder__c = NULL';
+    }
+}
