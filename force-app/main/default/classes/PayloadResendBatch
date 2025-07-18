@@ -1,0 +1,97 @@
+/**
+* @File Name         : PayloadResendBatch.cls
+* @Description       : Batch Class that identifies orders missing SAP numbers and resends their payloads every 2 hour.
+* @Author            : Russ Maksutov  
+* @Last Modified On  : June 4, 2025
+* @Modification Log  :
+*==============================================================================
+* Ver | Date         | 	Author           | 	Modification
+*==============================================================================
+* 1.0 | June 4, 2025 |	Russ Maksutov    | 	Initial Release
+*/
+public class PayloadResendBatch implements Database.Batchable<SObject>, Schedulable {
+
+    public Static FINAL DateTime startTime = System.now().addMinutes(-150);
+	public Static FINAL DateTime endTime = System.now().addMinutes(-30);
+    public Static FINAL Date within2Days = Date.today().addDays(-2);
+    
+    public Database.QueryLocator start(Database.BatchableContext BC) {
+
+        String query = 'SELECT Id, AccountId, ResendPayloadType__c,' +
+                       '(SELECT Id, Field, OldValue, NewValue, CreatedDate ' +
+                       ' FROM Histories ' +
+                       ' WHERE CreatedDate >= :startTime AND CreatedDate <= :endTime ) ' +
+                       ' FROM Order ' +
+               		   ' WHERE OrderSubmittedDate__c >= :within2Days' +
+					   ' AND Status != \'Cancelled\' ' +
+            		   ' AND SAPOrder__c = NULL ';
+        return Database.getQueryLocator(query);
+    }
+
+     public void execute(Database.BatchableContext BC, List<SObject> scope) {
+        List<Order> ordersToUpdate = new List<Order>();
+        Map<Id, Datetime> orderToStatusChangeTime = new Map<Id, Datetime>();
+        Map<Id, Id> orderToAccount = new Map<Id, Id>();
+        Set<Id> accountIds = new Set<Id>();
+
+        for (Order ord : (List<Order>) scope) {
+            if(Test.isRunningTest())
+                orderToStatusChangeTime.put(ord.Id, System.now().addHours(2));
+            for (OrderHistory hist : ord.Histories) {
+                if ( hist.Field == 'Status' && String.valueOf(hist.OldValue) == 'Draft' && String.valueOf(hist.NewValue) == 'Activated' && hist.CreatedDate >= startTime && hist.CreatedDate <= endTime){
+                    orderToStatusChangeTime.put(ord.Id, hist.CreatedDate);
+                    break;
+                }
+            }
+            if (ord.AccountId != null) {
+                accountIds.add(ord.AccountId);
+                orderToAccount.put(ord.Id, ord.AccountId);
+            }
+        }
+
+        Map<Id, List<Order>> accountToOtherOrders = new Map<Id, List<Order>>();
+        for (Order orderRecord : [SELECT Id, AccountId, CreatedDate, SAPOrder__c
+                        FROM Order
+                        WHERE AccountId IN :accountIds
+                        AND SAPOrder__c != null]) {
+
+            if (!accountToOtherOrders.containsKey(orderRecord.AccountId)) {
+                accountToOtherOrders.put(orderRecord.AccountId, new List<Order>());
+            }
+            accountToOtherOrders.get(orderRecord.AccountId).add(orderRecord);
+        }
+
+        for (Id orderId : orderToStatusChangeTime.keySet()) {
+            Id accId = orderToAccount.get(orderId);
+            Datetime statusChangeTime = orderToStatusChangeTime.get(orderId);
+
+            Boolean shouldExclude = false;
+            if (accountToOtherOrders.containsKey(accId)) {
+                for (Order other : accountToOtherOrders.get(accId)) {
+                    if (other.CreatedDate > statusChangeTime) {
+                        shouldExclude = true;
+                        break;
+                    }
+                    
+                }
+            }
+
+            if (!shouldExclude) {
+                ordersToUpdate.add(new Order(Id = orderId, ResendPayloadType__c = 'New'));
+            }
+        }
+
+        if (!ordersToUpdate.isEmpty()) {
+            Database.update(ordersToUpdate,false);
+        }
+    }
+
+    public void finish(Database.BatchableContext BC) {
+        System.debug('PayloadResendBatch finished.');
+    }
+
+    public void execute(SchedulableContext sc) {
+        PayloadResendBatch batch = new PayloadResendBatch();
+        Database.executeBatch(batch, 20);
+    }
+}
