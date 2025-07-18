@@ -1,0 +1,243 @@
+/**
+* @File Name : HistoricCaseGroupUpdateBatch.cls
+* @Description : 
+* @Author : Russ Maksutov
+* @Last Modified On : July 01, 2025
+* @Modification Log :
+*==============================================================================
+* Ver | Date           | Author             | Modification
+*==============================================================================
+* 1.0 | July 01, 2025 |     Russ Maksutov   | WEB-12744
+**/ 
+
+public class HistoricCaseGroupUpdateBatch implements Database.Batchable<SObject>, Database.Stateful, Schedulable {
+    static FINAL String CASE_ORIGIN = 'CaseOrigin';
+    static FINAL String MANUAL_REASON = 'ManualReason';
+    static FINAL String CASE_HISTORY = 'CaseHistory';
+
+    String processingContext = '';
+
+    public HistoricCaseGroupUpdateBatch(){
+        this.processingContext = CASE_ORIGIN;
+    }
+    
+    public HistoricCaseGroupUpdateBatch(String processingContext){
+        if (processingContext != CASE_ORIGIN && processingContext != MANUAL_REASON && processingContext != CASE_HISTORY) {
+            throw new IllegalArgumentException('Invalid processing context: ' + processingContext);
+        }
+        this.processingContext = processingContext;
+    }
+    
+    public Database.QueryLocator start(Database.BatchableContext BC) {        
+        if(processingContext == CASE_ORIGIN){
+            return Database.getQueryLocator(getCaseOriginQuery());
+        }else if(processingContext == MANUAL_REASON){ 
+            return Database.getQueryLocator(getManulReasonCaseQuery());
+        }else{
+            return Database.getQueryLocator(getCaseHistoryQuery());
+        }
+    }
+    
+   public void execute(SchedulableContext sc) {
+        Database.executeBatch(new HistoricCaseGroupUpdateBatch(CASE_ORIGIN), Integer.valueOf(System.Label.HistoricCaseUpdateBatchSize));
+    }
+    
+    public void execute(Database.BatchableContext BC, List<sObject> scope) {
+        List<Case> caseList = (List<Case>) scope;
+        if(processingContext == CASE_ORIGIN){
+            processCaseOriginRecords(caseList);
+        }else if(processingContext == MANUAL_REASON){
+            processManualReasonCaseRecords(caseList);
+        }else if(processingContext == CASE_HISTORY){
+            processCaseHistoryRecords(caseList);
+        }
+    }
+    
+    public void finish(Database.BatchableContext BC) {
+        if(processingContext == CASE_ORIGIN){
+            System.debug('Chained batch job for MANUAL_REASON');
+            Database.executeBatch(new HistoricCaseGroupUpdateBatch(MANUAL_REASON), Integer.valueOf(System.Label.HistoricCaseUpdateBatchSize));
+        }
+        if(processingContext == MANUAL_REASON){
+            System.debug('Chained batch job for CASE_HISTORY');
+            Database.executeBatch(new HistoricCaseGroupUpdateBatch(CASE_HISTORY), Integer.valueOf(System.Label.HistoricCaseUpdateBatchSize));
+        }
+    }
+
+    public static String getCaseOriginQuery() {
+        return 'SELECT Id, Status, CreatedDate, Origin, NPD_Reason_For_Transfer__c, OwnerId, Internal_Subject__c, Group__c ' +
+               'FROM Case ' +
+               'WHERE Group__c = NULL ';
+    }
+    
+
+    public static String getManulReasonCaseQuery(){
+        return 'SELECT Id, OwnerId, Owner.Name, Owner.UserRole.Name, Group__c, Manual_Reason__c ' + 
+               'FROM Case ' + 
+               'WHERE Group__c = NULL ';
+    }
+        
+    public static String getCaseHistoryQuery(){
+        return 'SELECT Id, Group__c, Origin, ' +
+               '(SELECT Id, Owner.UserRole.Name, QueueName FROM Related_Voice_Calls__r) ' +
+               'FROM Case ' +
+               'WHERE Group__c = NULL';
+    }
+
+    public static void processCaseOriginRecords(List<Case> caseRecordList){
+        List<Case> casesToUpdate = new List<Case>();
+
+        for (Case caseRecord : caseRecordList) {
+            String originalGroupValue = caseRecord.Group__c;
+    
+            if(caseRecord.Origin == 'Web' || caseRecord.Origin == 'Weber iGrill' || caseRecord.Origin == 'Weber Grills App'){
+                caseRecord.Group__c = 'Consumer Care - General';
+            }else if(caseRecord.Origin == 'Weber Connect'){
+                caseRecord.Group__c = 'Connected Technology Specialist';
+            }else if(caseRecord.Origin == 'Ada Bot' || caseRecord.Origin == 'Ada Parts' || caseRecord.Origin == 'Ada SMS'){
+                if(caseRecord.NPD_Reason_For_Transfer__c == null){
+                    caseRecord.Group__c = 'Consumer Care - General';
+                }else{
+                    caseRecord.Group__c = 'NPD Contacts';
+                }
+            }else if(caseRecord.Origin == 'Web - June Oven'){
+                caseRecord.Group__c = 'June Oven';
+            }else if(!String.valueOf(caseRecord.OwnerId).startsWith('00G') && caseRecord.Origin == 'Phone' && String.isNotBlank(caseRecord.Internal_Subject__c) && caseRecord.Internal_Subject__c.contains('LATAM All Other')){
+                caseRecord.Group__c = 'LATAM';
+            }
+    
+            if (caseRecord.Group__c != originalGroupValue) {
+                casesToUpdate.add(caseRecord);
+            }
+        }
+             
+        if(!casesToUpdate.isEmpty()){
+            Database.update(casesToUpdate, false);
+        }
+    }
+
+    public static void processManualReasonCaseRecords(List<Case> caseRecordList){
+        List<Case> casesToUpdate = new List<Case>();
+
+        Map<String, String> reasonToGroupMap = new Map<String, String>{
+            'Reviews'         => 'Social Reviews',
+            'Escalation'      => 'Resolution',
+            'Merge Request'   => 'Merge Request',
+            'Retail Services' => 'Retail Services',
+            'Service'         => 'Service',
+            'Order Management'=> 'Order Management',
+            'Incident'        => 'Incident'
+        };
+
+        for (Case caseRecord : caseRecordList) {
+            String originalGroupValue = caseRecord.Group__c;
+            
+            Boolean isOwnerQueue = false;
+            if (String.valueOf(caseRecord.OwnerId).startsWith('00G')) {
+                caseRecord.Group__c = caseRecord.Owner.Name;
+                isOwnerQueue = true;
+            }
+    
+            if (caseRecord.Manual_Reason__c != null && !isOwnerQueue) {
+                if (reasonToGroupMap.containsKey(caseRecord.Manual_Reason__c)) {
+                    caseRecord.Group__c = reasonToGroupMap.get(caseRecord.Manual_Reason__c);
+                } else if (caseRecord.Manual_Reason__c == 'Miscellaneous') {
+                    if (caseRecord.Owner.UserRole != null && caseRecord.Owner.UserRole.Name == 'IntouchCX Agent') {
+                        caseRecord.Group__c = 'Intouch Voice';
+                    } else if (caseRecord.Owner.UserRole != null && caseRecord.Owner.UserRole.Name == 'ADM Agent') {
+                        caseRecord.Group__c = 'Consumer Care - General';
+                    }
+                }
+            }
+    
+            if (caseRecord.Group__c != originalGroupValue) {
+                casesToUpdate.add(caseRecord);
+            }
+        }
+        
+        if(!casesToUpdate.isEmpty()){
+           Database.update(casesToUpdate, false);
+        }
+    }
+
+    public static void processCaseHistoryRecords(List<Case> caseRecordList){
+        Set<Id> caseIds = new Set<Id>();
+        Set<Id> caseIdsUpdatedWithHistory = new Set<Id>();
+
+        for(Case aCase : caseRecordList){
+            caseIds.add(aCase.Id);
+        }
+
+        List<CaseHistory> caseHistoryList = [SELECT Id, CaseId, OldValue, NewValue 
+                                            FROM CaseHistory 
+                                            WHERE CaseId IN :caseIds AND Field = 'Owner'];
+        Set<String> ownerIds = new Set<String>();
+        
+        for(CaseHistory history : caseHistoryList){
+            if(history.OldValue != null && String.valueOf(history.OldValue).startsWith('00G')){ 
+                ownerIds.add(String.valueOf(history.OldValue));  
+            }
+        }
+        
+        Map<String, String> groupMap = new Map<String, String>();
+
+        for(Group queue : [SELECT Id, Name FROM Group WHERE Id IN :ownerIds]){
+            groupMap.put(queue.Id, queue.Name); 
+        }
+        
+        List<Case> casesToUpdate = new List<Case>();
+        for(Case aCase : caseRecordList){
+            for(CaseHistory history : caseHistoryList){
+                String oldOwnerIdStr = String.valueOf(history.OldValue);
+                if(history.CaseId == aCase.Id && groupMap.containsKey(oldOwnerIdStr)){
+                    aCase.Group__c = groupMap.get(oldOwnerIdStr);
+                    casesToUpdate.add(aCase);
+                    caseIdsUpdatedWithHistory.add(aCase.Id);
+                    break;
+                }
+            }
+        }
+
+        List<Case> casesToUpdateVoice = new List<Case>();
+        
+        for (Case caseRec : caseRecordList) {
+            
+            if (caseIdsUpdatedWithHistory.contains(caseRec.Id) || caseRec.Origin != 'Phone') continue;
+        
+            String originalGroupValue = caseRec.Group__c;
+        
+            for (VoiceCall voiceRecord : caseRec.Related_Voice_Calls__r) {
+                String queueName = voiceRecord.QueueName;
+                String userRoleName = voiceRecord.Owner.UserRole != null ? voiceRecord.Owner.UserRole.Name : null;
+
+                if (queueName != null && queueName.startsWith('US')) {
+                    if (userRoleName != null && !userRoleName.contains('Intouch')) {
+                        caseRec.Group__c = 'Intouch Voice';
+                        break;
+                    } else if (userRoleName != null && userRoleName.contains('Palatine')) {
+                        caseRec.Group__c = 'Palatine Voice';
+                        break;
+                    }
+                } else if (queueName != null && queueName.startsWith('CA-') && queueName.endsWith('en-v')) {
+                    caseRec.Group__c = 'Canada';
+                    break;
+                } else if (queueName != null && queueName.equalsIgnoreCase('CA-All Other-fr-v')) {
+                    caseRec.Group__c = 'Canada French';
+                    break;
+                }
+            }
+        
+            if (caseRec.Group__c != originalGroupValue) {
+                casesToUpdateVoice.add(caseRec);
+            }
+        }
+        
+        if(!casesToUpdateVoice.isEmpty()){
+            casesToUpdate.addAll(casesToUpdateVoice);
+        }
+        
+        if(!casesToUpdate.isEmpty()){
+            Database.update(casesToUpdate, false);
+        }
+    }
+}
